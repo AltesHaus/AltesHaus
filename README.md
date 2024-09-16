@@ -15,4 +15,4 @@ Here are some ideas to get you started:
 - ⚡ Fun fact: ...
 -->
 
-![3D Contribution](./profile-3d-contrib/profile-green-animate.svg)
+![3D Contribution](.profile-3d-contrib/profile-gitblock.svg)
