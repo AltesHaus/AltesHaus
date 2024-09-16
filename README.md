@@ -16,3 +16,5 @@ Here are some ideas to get you started:
 -->
 
 ![3D Contribution](./profile-3d-contrib/profile-gitblock.svg)
+
+*only public contributions visible
