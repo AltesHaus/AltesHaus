@@ -15,6 +15,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           USERNAME: ${{ github.repository_owner }}
+      - name: Replace radar with Orbital Stat HUD
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PROFILE_USERNAME: ${{ github.repository_owner }}
+          FORCE_LIVE_STATS: '1'
+        run: node scripts/create-orbital-hud.mjs profile-3d-contrib/profile-gitblock.svg
       - name: Commit & Push
         run: |
           git config user.name github-actions
