@@ -15,6 +15,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           USERNAME: ${{ github.repository_owner }}
+      - name: Test profile enhancement
+        run: node --test scripts/create-orbital-hud.test.mjs
       - name: Replace radar with Orbital Stat HUD
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}

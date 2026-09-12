@@ -29,18 +29,17 @@ const toLevel = (value) => {
   return Math.min(Math.ceil(Math.log10(value + 1) * 2.2), 8);
 };
 
-const formatValue = (value) => {
-  if (value >= 10000) return `${Math.round(value / 1000)}K`;
-  if (value >= 1000) return `${(value / 1000).toFixed(1).replace(/\.0$/, '')}K`;
-  return String(value);
-};
-
 const extractDateRange = (svg) => {
   const match = svg.match(/(\d{4}-\d{2}-\d{2})\s*\/\s*(\d{4}-\d{2}-\d{2})/);
   return match ? { from: match[1], to: match[2] } : null;
 };
 
 const extractStats = (svg) => {
+  const saved = svg.match(/<metadata id="profile-stats">([^<]+)<\/metadata>/);
+  if (saved) {
+    const data = JSON.parse(saved[1]);
+    return Object.assign(data.stats, { total: data.total, privateCount: data.privateCount });
+  }
   const stats = [];
   const axisRegex =
     /<g class="axis">[\s\S]*?<text[^>]*>([^<]+)<title>(\d+)<\/title>/g;
@@ -59,76 +58,82 @@ const extractStats = (svg) => {
   ];
 };
 
-const githubSearchCount = async (endpoint, query, token) => {
-  const params = new URLSearchParams({ q: query, per_page: '1' });
-  const url = `https://api.github.com/search/${endpoint}?${params}`;
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept:
-      endpoint === 'commits'
-        ? 'application/vnd.github.cloak-preview'
-        : 'application/vnd.github+json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    throw new Error(`GitHub search/${endpoint} failed (${response.status})`);
-  }
-  const data = await response.json();
-  return data.total_count ?? 0;
-};
-
-const fetchRepoContributions = async (token, from, to) => {
-  const query = `
-    query {
-      viewer {
-        contributionsCollection(from: "${from}T00:00:00Z", to: "${to}T23:59:59Z") {
-          totalRepositoryContributions
-        }
-      }
-    }`.replace(/\s+/g, ' ');
-
+// Use the profile contribution collection, including its private aggregate.
+// Search counts are not contribution counts and omit inaccessible activity.
+export const fetchLiveStats = async (username, token, from, to) => {
+  const end = new Date(`${to}T23:59:59Z`);
+  const earliest = new Date(end);
+  earliest.setUTCFullYear(earliest.getUTCFullYear() - 1);
+  earliest.setUTCDate(earliest.getUTCDate() + 1);
+  earliest.setUTCHours(0, 0, 0, 0);
+  const start = new Date(Math.max(new Date(`${from}T00:00:00Z`), earliest));
   const response = await fetch('https://api.github.com/graphql', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query }),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: `query($login: String!, $from: DateTime!, $to: DateTime!) {
+        user(login: $login) { contributionsCollection(from: $from, to: $to) {
+          totalCommitContributions totalIssueContributions totalPullRequestContributions
+          totalPullRequestReviewContributions totalRepositoryContributions
+          restrictedContributionsCount contributionCalendar { totalContributions }
+        } }
+      }`,
+      variables: { login: username, from: start.toISOString(), to: end.toISOString() },
+    }),
   });
-  if (!response.ok) {
-    throw new Error(`GitHub GraphQL failed (${response.status})`);
-  }
   const data = await response.json();
-  return data.data?.viewer?.contributionsCollection?.totalRepositoryContributions ?? 0;
+  const collection = data.data?.user?.contributionsCollection;
+  if (!response.ok || data.errors?.length || !collection) {
+    throw new Error(`GitHub contribution lookup failed: ${JSON.stringify(data.errors ?? response.status)}`);
+  }
+  const stats = ['Commit', 'Issue', 'PullRequest', 'PullRequestReview', 'Repository'].map((name, i) => ({
+    name: ['Commit', 'Issue', 'PullReq', 'Review', 'Repo'][i],
+    value: collection[`total${name}Contributions`],
+  }));
+  stats.privateCount = collection.restrictedContributionsCount;
+  stats.total = collection.contributionCalendar.totalContributions;
+  if (new Date(`${from}T00:00:00Z`) < earliest) {
+    const previousEnd = new Date(earliest.getTime() - 1).toISOString().slice(0, 10);
+    const earlier = await fetchLiveStats(username, token, from, previousEnd);
+    stats.forEach((stat, i) => { stat.value += earlier[i].value; });
+    stats.privateCount += earlier.privateCount;
+    stats.total += earlier.total;
+  }
+  return stats;
 };
 
-export const fetchLiveStats = async (username, token, from, to) => {
-  const created = `created:${from}..${to}`;
-  const commitDate = `committer-date:${from}..${to}`;
+const character = readFileSync(new URL('../assets/profile-character.png', import.meta.url)).toString('base64');
 
-  const [commits, pullReqs, issues, reviews, repos] = await Promise.all([
-    githubSearchCount('commits', `author:${username} ${commitDate}`, token),
-    githubSearchCount('issues', `author:${username} type:pr ${created}`, token),
-    githubSearchCount('issues', `author:${username} type:issue ${created}`, token),
-    githubSearchCount('issues', `reviewed-by:${username} type:pr ${created}`, token),
-    fetchRepoContributions(token, from, to),
-  ]);
-
-  return [
-    { name: 'Commit', value: commits },
-    { name: 'Issue', value: issues },
-    { name: 'PullReq', value: pullReqs },
-    { name: 'Review', value: reviews },
-    { name: 'Repo', value: repos },
-  ];
+const animatedCount = (value, id, color, size = 14) => {
+  const label = Number(value).toLocaleString('en-US');
+  const frames = Array.from({ length: 18 }, (_, i) => {
+    const count = Math.round(value * (1 - (1 - i / 18) ** 3)).toLocaleString('en-US');
+    return `<text visibility="hidden" aria-hidden="true">${count}<set attributeName="visibility" to="visible" begin="${i / 15}s" dur="${1 / 15}s"/></text>`;
+  }).join('');
+  return `<g id="count-${id}" text-anchor="middle" fill="${color}" font-size="${size}" font-weight="800" font-family="Ubuntu, Helvetica, Arial, sans-serif" aria-label="${label}">
+    <text>${label}<set attributeName="visibility" to="hidden" begin="0s" dur="1.2s"/></text>${frames}</g>`;
 };
+
+const createCharacter = (stats) => `<g id="profile-character" transform="translate(70 545)">
+  <ellipse cx="120" cy="209" rx="90" ry="12" fill="#111133" opacity="0.08">
+    <animate attributeName="rx" values="90;75;90" dur="4s" repeatCount="indefinite"/>
+  </ellipse>
+  <ellipse cx="120" cy="185" rx="125" ry="30" fill="none" stroke="#4d4dff" stroke-opacity="0.2" stroke-dasharray="5 8"/>
+  <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -12;0 0" dur="4s" repeatCount="indefinite"/>
+    <image href="data:image/png;base64,${character}" x="25" y="0" width="190" height="190"/>
+  </g>
+  <circle r="5" fill="#3db840"><animateMotion dur="7s" repeatCount="indefinite" path="M -5,185 A 125,30 0 1,1 245,185 A 125,30 0 1,1 -5,185"/></circle>
+  <g transform="translate(300 100)">${animatedCount(stats.total ?? stats.reduce((sum, stat) => sum + stat.value, 0), 'total', '#111133', 36)}
+    <text y="27" text-anchor="middle" fill="#111133" font-size="12" font-family="Helvetica, Arial, sans-serif" letter-spacing="2">CONTRIBUTIONS</text>
+    <text y="52" text-anchor="middle" fill="#6b6b80" font-size="11" font-family="Helvetica, Arial, sans-serif">${(stats.privateCount ?? 0).toLocaleString('en-US')} in private repositories</text>
+  </g>
+</g>`;
 
 const removeExistingHud = (svg) => {
   const start = svg.indexOf('<!-- orbital-hud-start -->');
   const end = svg.indexOf('<!-- orbital-hud-end -->');
   if (start !== -1 && end !== -1) {
-    return svg.slice(0, start) + svg.slice(end + '<!-- orbital-hud-end -->'.length);
+    return svg.slice(0, start).trimEnd() + svg.slice(end + '<!-- orbital-hud-end -->'.length).trimStart();
   }
 
   const hudIdx = svg.indexOf('id="orbital-stat-hud"');
@@ -191,7 +196,7 @@ const removeOutermostGroupContaining = (svg, markerIdx, needle) => {
   return svg.slice(0, bounds.start) + svg.slice(bounds.end);
 };
 
-const isoBrick = (x, y, w, colors, delay = 0) => {
+const isoBrick = (x, y, w, colors) => {
   const hw = w / 2;
   const hh = w * 0.18;
   const h = BRICK_H;
@@ -215,7 +220,7 @@ const stackedPillar = (cx, baseY, levels, colors, statIdx) => {
   const bricks = [];
   for (let i = 0; i < levels; i += 1) {
     const y = baseY - (i + 1) * BRICK_H;
-    bricks.push(isoBrick(x, y, w, colors, statIdx * 0.15 + i * 0.08));
+    bricks.push(isoBrick(x, y, w, colors));
   }
   return `<g filter="url(#hud-glow-${statIdx})">${bricks.join('')}</g>`;
 };
@@ -232,7 +237,7 @@ const createHudFragment = (stats) => {
     const angle = (i / stats.length) * Math.PI * 2 - Math.PI / 2;
     return {
       ...stat,
-      x: cx + Math.cos(angle) * nodeRadius,
+      x: RADAR_X + 60 + i * 100,
       y: cy + Math.sin(angle) * nodeRadius * 0.52,
       angle,
       levels: toLevel(stat.value),
@@ -267,8 +272,8 @@ const createHudFragment = (stats) => {
     .map(
       (node) => `
     <g transform="translate(${node.x.toFixed(1)}, ${(baseY + 18).toFixed(1)})">
-      <text text-anchor="middle" fill="#111133" font-size="10" font-weight="700" letter-spacing="0.5" font-family="Ubuntu, Helvetica, Arial, sans-serif">${node.name.toUpperCase()}</text>
-      <text y="15" text-anchor="middle" fill="${node.colors.top}" font-size="14" font-weight="800" font-family="Ubuntu, Helvetica, Arial, sans-serif">${formatValue(node.value)}</text>
+      <text text-anchor="middle" fill="#111133" font-size="10" font-weight="700" letter-spacing="0.5" font-family="Ubuntu, Helvetica, Arial, sans-serif">${({ Commit: 'COMMITS', Issue: 'ISSUES', PullReq: 'PULL REQUESTS', Review: 'REVIEWS', Repo: 'REPOS' })[node.name]}</text>
+      <g transform="translate(0 20)">${animatedCount(node.value, node.name, node.colors.left)}</g>
     </g>`,
     )
     .join('\n');
@@ -292,8 +297,10 @@ const createHudFragment = (stats) => {
   }).join('\n');
 
   return `
+  <metadata id="profile-stats">${JSON.stringify({ stats, total: stats.total, privateCount: stats.privateCount })}</metadata>
+  ${createCharacter(stats)}
   <defs>
-    ${glowFilters}
+${glowFilters}
     <linearGradient id="scan-gradient" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#4d4dff" stop-opacity="0"/>
       <stop offset="40%" stop-color="#3db840" stop-opacity="0.5"/>
@@ -342,6 +349,7 @@ const createHudFragment = (stats) => {
     ${pillars}
     ${orbitDots}
     ${labels}
+    <text x="${cx}" y="${baseY + 65}" text-anchor="middle" fill="#6b6b80" font-size="10" font-family="Helvetica, Arial, sans-serif">Available activity breakdown · private activity included in total</text>
 
     <rect x="${RADAR_X + 10}" y="${RADAR_Y + 28}" width="${RADAR_W - 20}" height="2" fill="url(#scan-gradient)" opacity="0.7" rx="1">
       <animate attributeName="y" values="${RADAR_Y + 28};${RADAR_Y + RADAR_H - 36};${RADAR_Y + 28}" dur="5s" repeatCount="indefinite"/>
@@ -364,6 +372,7 @@ const appendHudStyles = (svg) => {
     @keyframes hud-fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     #orbital-stat-hud { animation: hud-fade-in 1.4s ease-out; }`;
 
+  if (svg.includes('@keyframes hud-fade-in')) return svg;
   if (svg.includes('<style>')) {
     return svg.replace('</style>', `${styleExtra}\n  </style>`);
   }
@@ -380,6 +389,15 @@ export const enhanceProfileSvg = (svgContent, statsOverride = null) => {
     svg = removeRadarChart(svg);
   }
 
+  // The upstream language donut and legend share this dedicated group.
+  const language = svg.indexOf('<g transform="translate(40, 520)">');
+  if (language !== -1) {
+    const bounds = findGroupBounds(svg, language + 2);
+    if (bounds) svg = svg.slice(0, bounds.start) + svg.slice(bounds.end);
+  }
+  if (stats.total != null) {
+    svg = svg.replace(/(x="384" y="830"[^>]*>)[^<]+/, `$1${stats.total}`);
+  }
   const hud = createHudFragment(stats);
   svg = injectHud(svg, hud);
   svg = appendHudStyles(svg);
@@ -407,7 +425,7 @@ const resolveStats = async (svg) => {
       );
       return liveStats;
     } catch (error) {
-      console.warn(`Live stats fetch failed, using SVG values: ${error.message}`);
+      throw error;
     }
   }
 
@@ -449,5 +467,5 @@ const isMainModule =
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
 if (isMainModule) {
-  main();
+  main().catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
