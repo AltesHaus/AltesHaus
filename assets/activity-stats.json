@@ -1,0 +1,27 @@
+{
+  "username": "AltesHaus",
+  "from": "2025-09-07",
+  "to": "2026-09-11",
+  "stats": [
+    {
+      "name": "Commit",
+      "value": 2343
+    },
+    {
+      "name": "Issue",
+      "value": 0
+    },
+    {
+      "name": "PullReq",
+      "value": 416
+    },
+    {
+      "name": "Review",
+      "value": 22
+    },
+    {
+      "name": "Repo",
+      "value": 3
+    }
+  ]
+}

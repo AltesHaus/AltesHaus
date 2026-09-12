@@ -38,7 +38,7 @@ const extractStats = (svg) => {
   const saved = svg.match(/<metadata id="profile-stats">([^<]+)<\/metadata>/);
   if (saved) {
     const data = JSON.parse(saved[1]);
-    return Object.assign(data.stats, { total: data.total, privateCount: data.privateCount });
+    return Object.assign(data.stats, { total: data.total, privateCount: data.privateCount, activityRange: data.activityRange });
   }
   const stats = [];
   const axisRegex =
@@ -60,7 +60,7 @@ const extractStats = (svg) => {
 
 // Use the profile contribution collection, including its private aggregate.
 // Search counts are not contribution counts and omit inaccessible activity.
-export const fetchLiveStats = async (username, token, from, to) => {
+export const fetchContributionTotals = async (username, token, from, to) => {
   const end = new Date(`${to}T23:59:59Z`);
   const earliest = new Date(end);
   earliest.setUTCFullYear(earliest.getUTCFullYear() - 1);
@@ -94,12 +94,55 @@ export const fetchLiveStats = async (username, token, from, to) => {
   stats.total = collection.contributionCalendar.totalContributions;
   if (new Date(`${from}T00:00:00Z`) < earliest) {
     const previousEnd = new Date(earliest.getTime() - 1).toISOString().slice(0, 10);
-    const earlier = await fetchLiveStats(username, token, from, previousEnd);
+    const earlier = await fetchContributionTotals(username, token, from, previousEnd);
     stats.forEach((stat, i) => { stat.value += earlier[i].value; });
     stats.privateCount += earlier.privateCount;
     stats.total += earlier.total;
   }
   return stats;
+};
+
+const snapshotPath = new URL('../assets/activity-stats.json', import.meta.url);
+
+export const fetchActivityStats = async (username, token, from, to) => {
+  const queries = [
+    ['Commit', 'commits', `author:${username} committer-date:${from}..${to}`],
+    ['Issue', 'issues', `author:${username} type:issue created:${from}..${to}`],
+    ['PullReq', 'issues', `author:${username} type:pr created:${from}..${to}`],
+    ['Review', 'issues', `reviewed-by:${username} type:pr created:${from}..${to}`],
+    ['Repo', 'repositories', `user:${username} created:${from}..${to}`],
+  ];
+  // Sequential requests avoid GitHub's secondary search rate limit.
+  const stats = [];
+  for (const [name, endpoint, query] of queries) {
+    const params = new URLSearchParams({ q: query, per_page: '1' });
+    const response = await fetch(`https://api.github.com/search/${endpoint}?${params}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    });
+    const data = await response.json();
+    if (!response.ok || data.incomplete_results || !Number.isInteger(data.total_count)) {
+      throw new Error(`Incomplete GitHub ${name} search (${response.status})`);
+    }
+    stats.push({ name, value: data.total_count });
+  }
+  return stats;
+};
+
+export const fetchLiveStats = async (username, token, from, to) => {
+  const totals = await fetchContributionTotals(username, token, from, to);
+  let activity;
+  if (process.env.GITHUB_ACTIONS === 'true' && process.env.PROFILE_PRIVATE_ACCESS !== 'true') {
+    const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+    if (snapshot.username !== username) throw new Error('Activity snapshot belongs to a different user');
+    activity = snapshot.stats;
+    activity.activityRange = { from: snapshot.from, to: snapshot.to };
+    console.log(`Preserving authenticated activity snapshot through ${snapshot.to}; GH_PAT is not configured.`);
+  } else {
+    activity = await fetchActivityStats(username, token, from, to);
+    activity.activityRange = { from, to };
+    writeFileSync(snapshotPath, `${JSON.stringify({ username, from, to, stats: activity }, null, 2)}\n`);
+  }
+  return Object.assign(activity, { total: totals.total, privateCount: totals.privateCount });
 };
 
 const character = readFileSync(new URL('../assets/profile-character.png', import.meta.url)).toString('base64');
@@ -272,7 +315,7 @@ const createHudFragment = (stats) => {
     .map(
       (node) => `
     <g transform="translate(${node.x.toFixed(1)}, ${(baseY + 18).toFixed(1)})">
-      <text text-anchor="middle" fill="#111133" font-size="10" font-weight="700" letter-spacing="0.5" font-family="Ubuntu, Helvetica, Arial, sans-serif">${({ Commit: 'COMMITS', Issue: 'ISSUES', PullReq: 'PULL REQUESTS', Review: 'REVIEWS', Repo: 'REPOS' })[node.name]}</text>
+      <text text-anchor="middle" fill="#111133" font-size="10" font-weight="700" letter-spacing="0.5" font-family="Ubuntu, Helvetica, Arial, sans-serif">${({ Commit: 'COMMITS', Issue: 'ISSUES', PullReq: 'PULL REQUESTS', Review: 'REVIEWED PRS', Repo: 'REPOS' })[node.name]}</text>
       <g transform="translate(0 20)">${animatedCount(node.value, node.name, node.colors.left)}</g>
     </g>`,
     )
@@ -297,10 +340,11 @@ const createHudFragment = (stats) => {
   }).join('\n');
 
   return `
-  <metadata id="profile-stats">${JSON.stringify({ stats, total: stats.total, privateCount: stats.privateCount })}</metadata>
+  <metadata id="profile-stats">${JSON.stringify({ stats, total: stats.total, privateCount: stats.privateCount, activityRange: stats.activityRange })}</metadata>
   ${createCharacter(stats)}
   <defs>
 ${glowFilters}
+    <clipPath id="orbit-clip"><rect x="${RADAR_X}" y="${RADAR_Y}" width="${RADAR_W}" height="${baseY - RADAR_Y - 10}"/></clipPath>
     <linearGradient id="scan-gradient" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#4d4dff" stop-opacity="0"/>
       <stop offset="40%" stop-color="#3db840" stop-opacity="0.5"/>
@@ -321,7 +365,7 @@ ${glowFilters}
       }).join('\n')}
     </g>
 
-    <g transform="translate(${cx}, ${cy})">
+    <g clip-path="url(#orbit-clip)"><g transform="translate(${cx}, ${cy})">
       <ellipse rx="${orbitRx}" ry="${orbitRy}" fill="none" stroke="#111133" stroke-width="0.7" opacity="0.1" stroke-dasharray="8 10">
         <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="30s" repeatCount="indefinite"/>
       </ellipse>
@@ -345,11 +389,12 @@ ${glowFilters}
       <circle r="4" fill="#ffffff"/>
     </g>
 
+    </g>
     ${connectors}
     ${pillars}
     ${orbitDots}
     ${labels}
-    <text x="${cx}" y="${baseY + 65}" text-anchor="middle" fill="#6b6b80" font-size="10" font-family="Helvetica, Arial, sans-serif">Available activity breakdown · private activity included in total</text>
+    <text x="${cx}" y="${baseY + 65}" text-anchor="middle" fill="#6b6b80" font-size="10" font-family="Helvetica, Arial, sans-serif">${stats.activityRange ? `Activity · ${stats.activityRange.from} / ${stats.activityRange.to}` : 'Activity'}</text>
 
     <rect x="${RADAR_X + 10}" y="${RADAR_Y + 28}" width="${RADAR_W - 20}" height="2" fill="url(#scan-gradient)" opacity="0.7" rx="1">
       <animate attributeName="y" values="${RADAR_Y + 28};${RADAR_Y + RADAR_H - 36};${RADAR_Y + 28}" dur="5s" repeatCount="indefinite"/>

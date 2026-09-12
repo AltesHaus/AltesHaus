@@ -22,6 +22,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           PROFILE_USERNAME: ${{ github.repository_owner }}
           FORCE_LIVE_STATS: '1'
+          PROFILE_PRIVATE_ACCESS: ${{ secrets.GH_PAT != '' }}
         run: node scripts/create-orbital-hud.mjs profile-3d-contrib/profile-gitblock.svg
       - name: Commit & Push
         run: |

@@ -16,3 +16,11 @@ Here are some ideas to get you started:
 -->
 
 ![3D Contribution](./profile-3d-contrib/profile-gitblock.svg)
+
+<!-- Maintenance: scripts/create-orbital-hud.mjs reads activity counts from authenticated
+GitHub search. assets/activity-stats.json preserves the last authenticated snapshot.
+Set the GH_PAT Actions secret with access to the relevant repositories to refresh
+these counts automatically; without it, scheduled builds retain the dated snapshot.
+The contribution-calendar total uses GitHub's separate profile contribution rules.
+Reviewed PRs counts PRs created within the displayed range that this user reviewed,
+not individual review submissions. -->
