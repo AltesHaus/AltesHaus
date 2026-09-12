@@ -17,12 +17,11 @@ jobs:
           USERNAME: ${{ github.repository_owner }}
       - name: Test profile enhancement
         run: node --test scripts/create-orbital-hud.test.mjs
-      - name: Replace radar with Orbital Stat HUD
+      - name: Remove charts and add profile character
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           PROFILE_USERNAME: ${{ github.repository_owner }}
           FORCE_LIVE_STATS: '1'
-          PROFILE_PRIVATE_ACCESS: ${{ secrets.GH_PAT != '' }}
         run: node scripts/create-orbital-hud.mjs profile-3d-contrib/profile-gitblock.svg
       - name: Commit & Push
         run: |
